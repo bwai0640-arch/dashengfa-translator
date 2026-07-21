@@ -1,0 +1,8 @@
+ctranslate2==4.8.1
+pywin32==312
+sentencepiece==0.2.2
+comtypes==1.4.16
+pillow==12.3.0
+pynput==1.8.2
+pystray==0.19.5
+uiautomation==2.0.29
