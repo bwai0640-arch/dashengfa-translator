@@ -30,7 +30,7 @@
 
 ## 下载与安装
 
-1. 前往 [Releases](https://github.com/bwai0640-arch/dashengfa-translator/releases/latest) 下载 `大声发划词翻译-0.3.0-Windows-x64.zip`。
+1. 前往 [Releases](https://github.com/bwai0640-arch/dashengfa-translator/releases/latest) 下载 `DaShengFaTranslator-0.3.0-Windows-x64.zip`。
 2. 完整解压 ZIP，不要只单独复制 EXE。
 3. 双击 `安装.cmd`。
 4. 安装完成后，软件会安静进入 Windows 系统托盘。
