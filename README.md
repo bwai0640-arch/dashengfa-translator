@@ -4,7 +4,7 @@
 
 **作者：眼泪斷了线**
 
-当前版本：`0.3.0` · Windows 10/11 · 本地翻译 · 无需 API Key
+当前版本：`0.3.1` · Windows 10/11 · 本地翻译 · 无需 API Key
 
 ![大声发划词翻译大窗口](docs/images/panel.png)
 
@@ -24,13 +24,14 @@
 | 按应用启用 | 常用应用优先；其他应用可批量开关、单独设置或提升为常用。 |
 | 系统托盘 | 右键图标即可切换窗口模式、暂停取词、打开设置或退出。 |
 | 完全离线 | ECDICT 负责单词，OPUS/CTranslate2 负责句子，中英双向均在本机完成。 |
-| 剪贴板保护 | 优先走无障碍接口；兼容读取会恢复文本剪贴板，图片和文件剪贴板不会被改写。 |
+| 多应用取词 | PowerPoint 使用专用选区读取；微信等自绘应用失败时自动走延时兼容读取。 |
+| 剪贴板保护 | 兼容读取前保存完整剪贴板对象；焦点或剪贴板被其他操作改变时立即取消。 |
 
 ![迷你划词窗口](docs/images/mini.png)
 
 ## 下载与安装
 
-1. 前往 [Releases](https://github.com/bwai0640-arch/dashengfa-translator/releases/latest) 下载 `DaShengFaTranslator-0.3.0-Windows-x64.zip`。
+1. 前往 [Releases](https://github.com/bwai0640-arch/dashengfa-translator/releases/latest) 下载 `DaShengFaTranslator-0.3.1-Windows-x64.zip`。
 2. 完整解压 ZIP，不要只单独复制 EXE。
 3. 双击 `安装.cmd`。
 4. 安装完成后，软件会安静进入 Windows 系统托盘。
@@ -59,7 +60,8 @@
 
 - 文档选区不会上传到在线翻译服务。
 - 程序不会读取密码输入框。
-- 检测到图片、文件等非文本剪贴板内容时，不启用复制兼容路径。
+- 兼容读取会短暂保存并还原原剪贴板；无法安全保存时不会发送复制快捷键。
+- 取词等待期间如果焦点或剪贴板被其他操作改变，软件会取消本次读取，不覆盖新内容。
 - 设置、日志和翻译缓存位于 `%LOCALAPPDATA%\DaShengFaTranslator`。
 - 从 `0.2.x` 升级时，软件会复制旧目录中的设置与翻译缓存，不删除旧数据。
 
@@ -70,7 +72,7 @@
         ↓
 应用白名单检查
         ↓
-Word COM → Windows UI Automation → 安全文本剪贴板兼容读取
+Word / PowerPoint 专用读取 → Windows UI Automation → 安全剪贴板兼容读取
         ↓
 ECDICT 单词查询 / OPUS 本地句子翻译
         ↓
@@ -100,7 +102,8 @@ python -m PyInstaller --noconfirm --clean `
 发布前至少运行：
 
 ```powershell
-python -m py_compile desktop_app.py app.py
+python -m py_compile desktop_app.py selection_capture.py app.py
+python -m unittest discover -s tests -v
 ```
 
 ## 项目结构
@@ -108,10 +111,12 @@ python -m py_compile desktop_app.py app.py
 | 路径 | 用途 |
 | --- | --- |
 | `desktop_app.py` | 桌面版入口、托盘、全局取词、界面和应用设置。 |
+| `selection_capture.py` | PowerPoint、UI Automation 与安全剪贴板兼容读取。 |
 | `app.py` | 本地词典、OPUS/CTranslate2 翻译、SAPI 发音和 Word 读取核心。 |
 | `resources/` | ECDICT 数据库、双向翻译模型和程序图标。 |
 | `DaShengFaTranslator.spec` | PyInstaller 打包配置。 |
 | `docs/` | 架构、发布和产品截图。 |
+| `tests/` | 不操作真实桌面和剪贴板的取词回归测试。 |
 
 ## 作者与许可
 

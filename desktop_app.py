@@ -28,10 +28,20 @@ from pynput import keyboard, mouse
 from tkinter import filedialog, messagebox
 
 import app as engine
+from selection_capture import (
+    ClipboardCaptureResult,
+    OleClipboardSnapshot,
+    capture_selected_text_with_clipboard,
+    initialize_ole_clipboard,
+    read_powerpoint_selected_text,
+    read_uia_selected_text,
+    timing_for_app,
+    uninitialize_ole_clipboard,
+)
 
 
 APP_NAME = "大声发划词翻译"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_AUTHOR = "眼泪斷了线"
 MAX_SELECTION_LENGTH = 3000
 INSTANCE_PORT = 39048
@@ -270,6 +280,8 @@ class AppInfo:
     name: str
     path: str = ""
     title: str = ""
+    hwnd: int = 0
+    process_id: int = 0
 
 
 def process_path(process_id: int) -> str:
@@ -297,7 +309,14 @@ def app_info_from_hwnd(hwnd: int, store: SettingsStore) -> AppInfo | None:
             return None
         title = win32gui.GetWindowText(hwnd).strip()
         name = store.app_name(exe)
-        return AppInfo(exe=exe, name=name, path=path, title=title)
+        return AppInfo(
+            exe=exe,
+            name=name,
+            path=path,
+            title=title,
+            hwnd=int(hwnd),
+            process_id=int(process_id),
+        )
     except Exception:
         return None
 
@@ -323,7 +342,7 @@ def discover_visible_apps(store: SettingsStore) -> dict[str, AppInfo]:
     return found
 
 
-def read_clipboard_text() -> tuple[str | None, list[int]]:
+def read_clipboard_text() -> tuple[str | None, list[int], bool]:
     formats: list[int] = []
     text: str | None = None
     for _attempt in range(6):
@@ -342,14 +361,14 @@ def read_clipboard_text() -> tuple[str | None, list[int]]:
                         text = value
             finally:
                 win32clipboard.CloseClipboard()
-            return text, formats
+            return text, formats, True
         except Exception:
             formats.clear()
             time.sleep(0.02)
-    return None, formats
+    return None, formats, False
 
 
-def write_clipboard_text(text: str | None) -> None:
+def write_clipboard_text(text: str | None) -> bool:
     for _attempt in range(6):
         try:
             win32clipboard.OpenClipboard()
@@ -359,9 +378,10 @@ def write_clipboard_text(text: str | None) -> None:
                     win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
             finally:
                 win32clipboard.CloseClipboard()
-            return
+            return True
         except Exception:
             time.sleep(0.02)
+    return False
 
 
 class DesktopSelectionWatcher:
@@ -377,14 +397,18 @@ class DesktopSelectionWatcher:
         self.status_callback = status_callback
         self.outside_click_callback = outside_click_callback
         self.stop_event = threading.Event()
-        self.events: queue.Queue[tuple[int, int, AppInfo] | None] = queue.Queue(maxsize=1)
+        self.stopped_event = threading.Event()
+        self.events: queue.Queue[tuple[int, int, AppInfo, int] | None] = queue.Queue(maxsize=1)
+        self.event_lock = threading.Lock()
         self.listener: mouse.Listener | None = None
         self.worker: threading.Thread | None = None
         self.press: tuple[int, int, float] | None = None
         self.last_release: tuple[int, int, float, str] | None = None
         self.last_emitted: tuple[str, str, float] = ("", "", 0.0)
+        self.interaction_id = 0
 
     def start(self) -> None:
+        self.stopped_event.clear()
         self.worker = threading.Thread(target=self._capture_loop, daemon=True, name="SelectionCapture")
         self.worker.start()
         self.listener = mouse.Listener(on_click=self._on_click)
@@ -392,19 +416,31 @@ class DesktopSelectionWatcher:
         self.listener.start()
 
     def stop(self) -> None:
+        if self.stop_event.is_set():
+            return
         self.stop_event.set()
-        try:
-            self.events.put_nowait(None)
-        except queue.Full:
-            pass
+        self.interaction_id += 1
         if self.listener:
             self.listener.stop()
+        with self.event_lock:
+            while True:
+                try:
+                    self.events.get_nowait()
+                except queue.Empty:
+                    break
+            try:
+                self.events.put_nowait(None)
+            except queue.Full:
+                pass
+        if self.worker is None:
+            self.stopped_event.set()
 
     def _on_click(self, x: int, y: int, button: mouse.Button, pressed: bool) -> None:
         if button != mouse.Button.left or self.stop_event.is_set():
             return
         now = time.monotonic()
         if pressed:
+            self.interaction_id += 1
             self.outside_click_callback(int(x), int(y))
             self.press = (int(x), int(y), now)
             return
@@ -428,50 +464,99 @@ class DesktopSelectionWatcher:
         self.last_release = (int(x), int(y), now, app_info.exe)
         if not dragged and not double_clicked:
             return
+        if self.stop_event.is_set():
+            return
 
-        event = (int(x), int(y), app_info)
-        while True:
+        event = (int(x), int(y), app_info, self.interaction_id)
+        with self.event_lock:
+            if self.stop_event.is_set():
+                return
+            while True:
+                try:
+                    self.events.get_nowait()
+                except queue.Empty:
+                    break
             try:
-                self.events.get_nowait()
-            except queue.Empty:
-                break
-        try:
-            self.events.put_nowait(event)
-        except queue.Full:
-            pass
+                self.events.put_nowait(event)
+            except queue.Full:
+                pass
 
     def _capture_loop(self) -> None:
-        pythoncom.CoInitialize()
+        com_initialized = False
+        ole_initialized = False
         try:
+            pythoncom.CoInitialize()
+            com_initialized = True
+            ole_initialized = initialize_ole_clipboard()
             with auto.UIAutomationInitializerInThread():
                 while not self.stop_event.is_set():
                     event = self.events.get()
                     if event is None:
                         return
-                    x, y, app_info = event
-                    time.sleep(0.075)
+                    x, y, app_info, interaction_id = event
+                    timing = timing_for_app(app_info.exe)
+                    time.sleep(timing.settle_seconds)
+                    if self.stop_event.is_set():
+                        continue
+                    if interaction_id != self.interaction_id or not self._focus_is_current(app_info):
+                        self.status_callback(f"已取消 {app_info.name} 取词：焦点已经切换")
+                        continue
                     text, protected = self._capture_selection(app_info, x, y)
+                    clipboard_result: ClipboardCaptureResult | None = None
                     if (
                         not text
                         and not protected
+                        and not self.stop_event.is_set()
                         and bool(self.store.get("clipboard_fallback", True))
                     ):
-                        text = self._capture_with_clipboard()
+                        clipboard_result = self._capture_with_clipboard(app_info, interaction_id)
+                        text = clipboard_result.text
+                    if self.stop_event.is_set():
+                        continue
                     text = engine.normalize_selection(text or "")
-                    if not text or len(text) > MAX_SELECTION_LENGTH:
+                    if not text:
+                        if protected:
+                            self.status_callback("已跳过密码输入区域")
+                        elif clipboard_result and clipboard_result.reason == "snapshot_unavailable":
+                            self.status_callback(f"未读取到 {app_info.name} 选区；为保护剪贴板已停止兼容复制")
+                        elif clipboard_result and clipboard_result.reason == "restore_failed":
+                            self.status_callback("原剪贴板未能完整还原，本次未得到可用文字")
+                            log(f"Clipboard restore failed after capture from {app_info.exe}")
+                        else:
+                            reason = clipboard_result.reason if clipboard_result else "uia_empty"
+                            self.status_callback(f"未从 {app_info.name} 读取到选中文字")
+                            log(f"Selection capture missed: app={app_info.exe}, reason={reason}")
+                        continue
+                    if len(text) > MAX_SELECTION_LENGTH:
+                        self.status_callback(f"选中文字超过 {MAX_SELECTION_LENGTH} 字，已忽略")
                         continue
                     old_text, old_exe, old_time = self.last_emitted
                     now = time.monotonic()
                     if text == old_text and app_info.exe == old_exe and now - old_time < 0.7:
                         continue
                     self.last_emitted = (text, app_info.exe, now)
-                    self.status_callback(f"已从 {app_info.name} 读取选中文字")
+                    if clipboard_result and clipboard_result.reason == "restore_failed":
+                        self.status_callback(f"已从 {app_info.name} 读取文字，但原剪贴板还原失败")
+                        log(f"Clipboard restore failed after capture from {app_info.exe}")
+                    else:
+                        self.status_callback(f"已从 {app_info.name} 读取选中文字")
                     self.selection_callback(text, app_info, x, y)
         except Exception as exc:
             log(f"Selection watcher error: {exc}\n{traceback.format_exc()}")
             self.status_callback("桌面取词暂时不可用，请从托盘重新启动")
         finally:
-            pythoncom.CoUninitialize()
+            if ole_initialized:
+                uninitialize_ole_clipboard()
+            if com_initialized:
+                pythoncom.CoUninitialize()
+            self.stopped_event.set()
+
+    @staticmethod
+    def _focus_is_current(app_info: AppInfo) -> bool:
+        try:
+            return not app_info.hwnd or int(win32gui.GetForegroundWindow()) == app_info.hwnd
+        except Exception:
+            return False
 
     def _capture_selection(self, app_info: AppInfo, x: int, y: int) -> tuple[str, bool]:
         if app_info.exe == "winword.exe":
@@ -483,6 +568,15 @@ class DesktopSelectionWatcher:
                     return str(selection.Text), False
             except Exception:
                 pass
+
+        if app_info.exe == "powerpnt.exe":
+            selected = read_powerpoint_selected_text(
+                win32com.client.GetActiveObject,
+                MAX_SELECTION_LENGTH,
+                app_info.title,
+            )
+            if selected:
+                return selected, False
 
         controls: list[object] = []
         try:
@@ -498,76 +592,68 @@ class DesktopSelectionWatcher:
         except Exception:
             pass
 
-        visited: set[tuple[int, int, int, int]] = set()
-        protected = False
-        for control in controls:
-            current = control
-            for _level in range(9):
-                if not current:
-                    break
-                try:
-                    rectangle = current.BoundingRectangle
-                    key = (rectangle.left, rectangle.top, rectangle.right, rectangle.bottom)
-                    if key in visited:
-                        current = current.GetParentControl()
-                        continue
-                    visited.add(key)
-                    if bool(getattr(current, "IsPassword", False)):
-                        protected = True
-                        break
-                    for pattern_id in (auto.PatternId.TextPattern2, auto.PatternId.TextPattern):
-                        pattern = current.GetPattern(pattern_id)
-                        if not pattern:
-                            continue
-                        ranges = pattern.GetSelection()
-                        values: list[str] = []
-                        for text_range in ranges or []:
-                            value = engine.normalize_selection(text_range.GetText(MAX_SELECTION_LENGTH + 1))
-                            if value:
-                                values.append(value)
-                        selected = "\n".join(values).strip()
-                        if selected:
-                            return selected, protected
-                    current = current.GetParentControl()
-                except Exception:
-                    try:
-                        current = current.GetParentControl()
-                    except Exception:
-                        break
-        return "", protected
+        return read_uia_selected_text(
+            controls,
+            (auto.PatternId.TextPattern2, auto.PatternId.TextPattern),
+            MAX_SELECTION_LENGTH,
+            engine.normalize_selection,
+        )
 
-    @staticmethod
-    def _capture_with_clipboard() -> str:
-        old_text, formats = read_clipboard_text()
-        image_or_file_formats = {
-            win32con.CF_BITMAP,
-            win32con.CF_DIB,
-            getattr(win32con, "CF_DIBV5", 17),
-            win32con.CF_HDROP,
-            win32con.CF_METAFILEPICT,
-            win32con.CF_ENHMETAFILE,
-        }
-        if image_or_file_formats.intersection(formats):
-            return ""
-        before = ctypes.windll.user32.GetClipboardSequenceNumber()
-        controller = keyboard.Controller()
-        try:
+    def _capture_with_clipboard(self, app_info: AppInfo, interaction_id: int) -> ClipboardCaptureResult:
+        old_text: str | None = None
+        formats: list[int] = []
+        old_state_known = False
+        old_sequence = int(ctypes.windll.user32.GetClipboardSequenceNumber())
+        for _attempt in range(4):
+            before = int(ctypes.windll.user32.GetClipboardSequenceNumber())
+            candidate_text, candidate_formats, candidate_known = read_clipboard_text()
+            after = int(ctypes.windll.user32.GetClipboardSequenceNumber())
+            if candidate_known and before == after:
+                old_text = candidate_text
+                formats = candidate_formats
+                old_state_known = True
+                old_sequence = after
+                break
+            time.sleep(0.02)
+
+        def send_copy() -> None:
+            controller = keyboard.Controller()
             with controller.pressed(keyboard.Key.ctrl):
-                controller.press("c")
-                controller.release("c")
-            copied = ""
-            deadline = time.monotonic() + 0.45
-            while time.monotonic() < deadline:
-                time.sleep(0.025)
-                if ctypes.windll.user32.GetClipboardSequenceNumber() != before:
-                    copied, _formats = read_clipboard_text()
-                    copied = copied or ""
-                    break
-            write_clipboard_text(old_text)
-            return copied
-        except Exception:
-            write_clipboard_text(old_text)
-            return ""
+                copy_key = keyboard.KeyCode.from_vk(0x43)
+                controller.press(copy_key)
+                controller.release(copy_key)
+
+        def clipboard_change_is_ours() -> bool:
+            if not app_info.process_id:
+                return False
+            try:
+                owner = int(ctypes.windll.user32.GetClipboardOwner())
+                if not owner:
+                    return False
+                _thread_id, owner_process_id = win32process.GetWindowThreadProcessId(owner)
+                return int(owner_process_id) == app_info.process_id
+            except Exception:
+                return False
+
+        timing = timing_for_app(app_info.exe)
+        return capture_selected_text_with_clipboard(
+            old_text=old_text,
+            old_formats=formats,
+            old_state_known=old_state_known,
+            old_sequence=old_sequence,
+            snapshot_factory=OleClipboardSnapshot.capture,
+            sequence_number=lambda: int(ctypes.windll.user32.GetClipboardSequenceNumber()),
+            send_copy=send_copy,
+            read_text=lambda: read_clipboard_text()[0],
+            restore_plain_text=write_clipboard_text,
+            timeout_seconds=timing.clipboard_timeout_seconds,
+            focus_is_current=lambda: (
+                not self.stop_event.is_set()
+                and interaction_id == self.interaction_id
+                and self._focus_is_current(app_info)
+            ),
+            clipboard_change_is_ours=clipboard_change_is_ours,
+        )
 
 
 class ToggleSwitch(tk.Canvas):
@@ -699,7 +785,7 @@ class SettingsWindow:
         self._setting_row(
             general,
             "兼容读取",
-            "仅在无障碍接口读取失败时短暂复制，并恢复原文本剪贴板；图片和文件剪贴板不会被动用",
+            "仅在专用接口和无障碍读取失败时短暂复制；会尽量完整还原原剪贴板",
             fallback_var,
             lambda: self.store.set("clipboard_fallback", fallback_var.get()),
         )
@@ -950,6 +1036,7 @@ class DesktopTranslatorApp:
         self.translation_worker: threading.Thread | None = None
         self.watcher: DesktopSelectionWatcher | None = None
         self.tray: pystray.Icon | None = None
+        self.quitting = False
         self.settings_window = SettingsWindow(self)
 
         self._build_panel()
@@ -1474,17 +1561,34 @@ class DesktopTranslatorApp:
         self.start_tray()
 
     def quit(self) -> None:
+        if self.quitting:
+            return
+        self.quitting = True
         if self.watcher:
             self.watcher.stop()
         try:
             self.request_queue.put_nowait(None)
         except queue.Full:
             pass
+        try:
+            self.root.withdraw()
+            self.hide_mini()
+            if self.settings_window.window:
+                self.settings_window.window.withdraw()
+        except tk.TclError:
+            pass
+        self._finish_quit_when_capture_stopped()
+
+    def _finish_quit_when_capture_stopped(self) -> None:
+        if self.watcher and not self.watcher.stopped_event.is_set():
+            self.root.after(40, self._finish_quit_when_capture_stopped)
+            return
         if self.tray:
             try:
                 self.tray.stop()
             except Exception:
                 pass
+            self.tray = None
         try:
             if self.settings_window.window:
                 self.settings_window.window.destroy()
