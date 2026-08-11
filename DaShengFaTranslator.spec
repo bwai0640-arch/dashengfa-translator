@@ -50,6 +50,19 @@ a = Analysis(
         "sklearn",
         "spacy",
         "stanza",
+        # CTranslate2 exposes optional conversion helpers.  They pull in the
+        # following unrelated data-science and model-download stacks when
+        # present in a developer's global Python environment, but the desktop
+        # translator only uses CTranslate2's local runtime API.
+        "gradio",
+        "huggingface_hub",
+        "hf_xet",
+        "llvmlite",
+        "lxml",
+        "matplotlib",
+        "numba",
+        "pandas",
+        "pyarrow",
     ],
     noarchive=False,
     optimize=0,
