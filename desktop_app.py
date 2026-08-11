@@ -41,7 +41,7 @@ from selection_capture import (
 
 
 APP_NAME = "大声发划词翻译"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_AUTHOR = "眼泪斷了线"
 MAX_SELECTION_LENGTH = 3000
 INSTANCE_PORT = 39048

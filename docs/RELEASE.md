@@ -37,7 +37,7 @@ python -m PyInstaller --noconfirm --clean `
 发布目录结构：
 
 ```text
-大声发划词翻译-0.3.1-Windows-x64/
+大声发划词翻译-0.3.2-Windows-x64/
 ├─ DaShengFaTranslator/
 ├─ 安装.cmd
 ├─ 卸载.cmd
@@ -47,7 +47,7 @@ python -m PyInstaller --noconfirm --clean `
 └─ THIRD_PARTY_NOTICES.md
 ```
 
-压缩为 `DaShengFaTranslator-0.3.1-Windows-x64.zip`，计算 SHA256，并把 ZIP 作为 GitHub Release 资产上传。压缩包内部的顶层目录仍使用中文产品名；构建目录与 ZIP 不进入 Git 历史。
+压缩为 `DaShengFaTranslator-0.3.2-Windows-x64.zip`，计算 SHA256，并把 ZIP 作为 GitHub Release 资产上传。压缩包内部的顶层目录仍使用中文产品名；构建目录与 ZIP 不进入 Git 历史。
 
 ## GitHub 发布门禁
 
