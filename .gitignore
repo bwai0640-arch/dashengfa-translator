@@ -4,6 +4,8 @@ __pycache__/
 
 build-desktop/
 dist-desktop/
+build-desktop-final/
+dist-desktop-final/
 release-staging/
 
 .test-*/
@@ -19,6 +21,16 @@ clip_fix_preview.png
 resources/ecdict.csv
 resources/ecdict.mini.csv
 resources/models/*/stanza/
+
+# Runtime TTS binaries ship in the Windows Release package. They are kept
+# outside ordinary Git history because several files exceed GitHub's 100 MB
+# per-file limit. Keep the small Piper license/config/model-card files public.
+resources/models/kokoro/*.onnx
+resources/models/kokoro/*.bin
+resources/models/piper/*.onnx
+
+# Retired local speech experiment; it is not part of the 0.4 runtime contract.
+resources/models/melo/
 
 *.log
 *.tmp
